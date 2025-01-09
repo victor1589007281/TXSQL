@@ -1776,6 +1776,9 @@ bool buf_frame_will_withdrawn(buf_pool_t *buf_pool, const byte *ptr) {
 until withdrawn by buf_pool->withdraw_target.
 @param[in]	buf_pool	buffer pool instance
 @retval true	if retry is needed */
+/** 从缓冲池实例的末端撤回缓冲池块，直到 buf_pool->withdraw_target 被撤回。
+@param[in]	buf_pool	缓冲池实例
+@retval true	如果需要重试 */
 static bool buf_pool_withdraw_blocks(buf_pool_t *buf_pool) {
   buf_block_t *block;
   ulint loop_count = 0;
@@ -1785,20 +1788,28 @@ static bool buf_pool_withdraw_blocks(buf_pool_t *buf_pool) {
   ib::info(ER_IB_MSG_56) << "buffer pool " << i
                          << " : start to withdraw the last "
                          << buf_pool->withdraw_target << " blocks.";
+  // 记录日志信息，开始从缓冲池 i 撤回最后的 buf_pool->withdraw_target 块。
 
   /* Minimize buf_pool->zip_free[i] lists */
+  /* 最小化 buf_pool->zip_free[i] 列表 */
   buf_buddy_condense_free(buf_pool);
 
   mutex_enter(&buf_pool->LRU_list_mutex);
+  // 进入 LRU 列表互斥锁。
   lru_len = UT_LIST_GET_LEN(buf_pool->LRU);
+  // 获取 LRU 列表的长度。
   mutex_exit(&buf_pool->LRU_list_mutex);
+  // 退出 LRU 列表互斥锁。
 
   mutex_enter(&buf_pool->free_list_mutex);
+  // 进入 free_list 互斥锁。
   while (UT_LIST_GET_LEN(buf_pool->withdraw) < buf_pool->withdraw_target) {
     /* try to withdraw from free_list */
+    /* 尝试从 free_list 撤回 */
     ulint count1 = 0;
 
     block = reinterpret_cast<buf_block_t *>(UT_LIST_GET_FIRST(buf_pool->free));
+    // 获取 free_list 中的第一个块。
     while (block != NULL &&
            UT_LIST_GET_LEN(buf_pool->withdraw) < buf_pool->withdraw_target) {
       ut_ad(block->page.in_free_list);
@@ -1809,9 +1820,11 @@ static bool buf_pool_withdraw_blocks(buf_pool_t *buf_pool) {
       buf_block_t *next_block;
       next_block =
           reinterpret_cast<buf_block_t *>(UT_LIST_GET_NEXT(list, &block->page));
+      // 获取 free_list 中的下一个块。
 
       if (buf_block_will_withdrawn(buf_pool, block)) {
         /* This should be withdrawn */
+        /* 这个块应该被撤回 */
         UT_LIST_REMOVE(buf_pool->free, &block->page);
         UT_LIST_ADD_LAST(buf_pool->withdraw, &block->page);
         ut_d(block->in_withdraw_list = TRUE);
@@ -1822,16 +1835,19 @@ static bool buf_pool_withdraw_blocks(buf_pool_t *buf_pool) {
     }
 
     /* reserve free_list length */
+    /* 保留 free_list 长度 */
     if (UT_LIST_GET_LEN(buf_pool->withdraw) < buf_pool->withdraw_target) {
       ulint scan_depth;
       ulint n_flushed = 0;
 
       /* cap scan_depth with current LRU size. */
+      /* 使用当前 LRU 大小限制 scan_depth。 */
       scan_depth = ut_min(ut_max(buf_pool->withdraw_target -
                                      UT_LIST_GET_LEN(buf_pool->withdraw),
                                  static_cast<ulint>(srv_LRU_scan_depth)),
                           lru_len);
       mutex_exit(&buf_pool->free_list_mutex);
+      // 退出 free_list 互斥锁。
 
       buf_flush_do_batch(buf_pool, BUF_FLUSH_LRU, scan_depth, 0, &n_flushed);
       buf_flush_wait_batch_end(buf_pool, BUF_FLUSH_LRU, n_flushed != 0);
@@ -1843,22 +1859,28 @@ static bool buf_pool_withdraw_blocks(buf_pool_t *buf_pool) {
       }
     } else {
       mutex_exit(&buf_pool->free_list_mutex);
+      // 退出 free_list 互斥锁。
     }
 
     /* relocate blocks/buddies in withdrawn area */
+    /* 重新定位撤回区域中的块/伙伴 */
     ulint count2 = 0;
 
     mutex_enter(&buf_pool->LRU_list_mutex);
+    // 进入 LRU 列表互斥锁。
     buf_page_t *bpage;
     bpage = UT_LIST_GET_FIRST(buf_pool->LRU);
+    // 获取 LRU 列表中的第一个页面。
     while (bpage != NULL) {
       BPageMutex *block_mutex;
       buf_page_t *next_bpage;
 
       block_mutex = buf_page_get_mutex(bpage);
       mutex_enter(block_mutex);
+      // 进入页面互斥锁。
 
       next_bpage = UT_LIST_GET_NEXT(LRU, bpage);
+      // 获取 LRU 列表中的下一个页面。
 
       if (bpage->zip.data != NULL &&
           buf_frame_will_withdrawn(buf_pool,
@@ -1868,6 +1890,7 @@ static bool buf_pool_withdraw_blocks(buf_pool_t *buf_pool) {
           if (!buf_buddy_realloc(buf_pool, bpage->zip.data,
                                  page_zip_get_size(&bpage->zip))) {
             /* failed to allocate block */
+            /* 分配块失败 */
             break;
           }
           mutex_enter(block_mutex);
@@ -1875,6 +1898,7 @@ static bool buf_pool_withdraw_blocks(buf_pool_t *buf_pool) {
         }
         /* NOTE: if the page is in use,
         not reallocated yet */
+        /* 注意：如果页面正在使用中，还没有重新分配 */
       }
 
       if (buf_page_get_state(bpage) == BUF_BLOCK_FILE_PAGE &&
@@ -1885,6 +1909,7 @@ static bool buf_pool_withdraw_blocks(buf_pool_t *buf_pool) {
           if (!buf_page_realloc(buf_pool,
                                 reinterpret_cast<buf_block_t *>(bpage))) {
             /* failed to allocate block */
+            /* 分配块失败 */
             break;
           }
           count2++;
@@ -1893,6 +1918,7 @@ static bool buf_pool_withdraw_blocks(buf_pool_t *buf_pool) {
         }
         /* NOTE: if the page is in use,
         not reallocated yet */
+        /* 注意：如果页面正在使用中，还没有重新分配 */
       } else {
         mutex_exit(block_mutex);
       }
@@ -1901,35 +1927,45 @@ static bool buf_pool_withdraw_blocks(buf_pool_t *buf_pool) {
     }
 
     mutex_exit(&buf_pool->LRU_list_mutex);
+    // 退出 LRU 列表互斥锁。
 
     mutex_enter(&buf_pool->free_list_mutex);
+    // 进入 free_list 互斥锁。
 
     buf_resize_status("buffer pool %lu : withdrawing blocks. (%lu/%lu)", i,
                       UT_LIST_GET_LEN(buf_pool->withdraw),
                       buf_pool->withdraw_target);
+    // 记录日志信息，缓冲池 i 正在撤回块。
 
     ib::info(ER_IB_MSG_57) << "buffer pool " << i << " : withdrew " << count1
                            << " blocks from free list."
                            << " Tried to relocate " << count2 << " pages ("
                            << UT_LIST_GET_LEN(buf_pool->withdraw) << "/"
                            << buf_pool->withdraw_target << ").";
+    // 记录日志信息，从 free_list 中撤回了 count1 块。尝试重新定位 count2 个页面。
 
     if (++loop_count >= 10) {
       /* give up for now.
       retried after user threads paused. */
+      /* 现在放弃。用户线程暂停后重试。 */
 
       mutex_exit(&buf_pool->free_list_mutex);
+      // 退出 free_list 互斥锁。
 
       ib::info(ER_IB_MSG_58)
           << "buffer pool " << i << " : will retry to withdraw later.";
+      // 记录日志信息，缓冲池 i 将稍后重试撤回。
 
       /* need retry later */
+      /* 需要稍后重试 */
       return (true);
     }
   }
   mutex_exit(&buf_pool->free_list_mutex);
+  // 退出 free_list 互斥锁。
 
   /* confirm withdrawn enough */
+  /* 确认撤回足够 */
   const buf_chunk_t *chunk = buf_pool->chunks + buf_pool->n_chunks_new;
   const buf_chunk_t *echunk = buf_pool->chunks + buf_pool->n_chunks;
 
@@ -1939,6 +1975,7 @@ static bool buf_pool_withdraw_blocks(buf_pool_t *buf_pool) {
       /* If !=BUF_BLOCK_NOT_USED block in the
       withdrawn area, it means corruption
       something */
+      /* 如果撤回区域中的块不是 BUF_BLOCK_NOT_USED，则意味着某些东西损坏了 */
       ut_a(buf_block_get_state(block) == BUF_BLOCK_NOT_USED);
       ut_ad(block->in_withdraw_list);
     }
@@ -1946,16 +1983,21 @@ static bool buf_pool_withdraw_blocks(buf_pool_t *buf_pool) {
   }
 
   mutex_enter(&buf_pool->free_list_mutex);
+  // 进入 free_list 互斥锁。
   ib::info(ER_IB_MSG_59) << "buffer pool " << i << " : withdrawn target "
                          << UT_LIST_GET_LEN(buf_pool->withdraw) << " blocks.";
+  // 记录日志信息，缓冲池 i 撤回目标为 UT_LIST_GET_LEN(buf_pool->withdraw) 块。
   mutex_exit(&buf_pool->free_list_mutex);
+  // 退出 free_list 互斥锁。
 
   /* retry is not needed */
+  /* 不需要重试 */
   ++buf_withdraw_clock;
   os_wmb;
 
   return (false);
 }
+
 
 /** resize page_hash and zip_hash for a buffer pool instance.
 @param[in]	buf_pool	buffer pool instance */
@@ -2068,8 +2110,10 @@ ulonglong buf_pool_adjust_chunk_unit(ulonglong size) {
   return size;
 }
 
+
 /** Resize the buffer pool based on srv_buf_pool_size from
 srv_buf_pool_old_size. */
+/** 根据 srv_buf_pool_size 从 srv_buf_pool_old_size 调整缓冲池大小。 */
 static void buf_pool_resize() {
   buf_pool_t *buf_pool;
   ulint new_instance_size;
@@ -2083,6 +2127,7 @@ static void buf_pool_resize() {
 
   /* Assumes that buf_resize_thread has already issued the necessary
   memory barrier to read srv_buf_pool_size and srv_buf_pool_old_size */
+  /* 假设 buf_resize_thread 已经发出了必要的内存屏障来读取 srv_buf_pool_size 和 srv_buf_pool_old_size */
   new_instance_size = srv_buf_pool_size / srv_buf_pool_instances;
   new_instance_size /= UNIV_PAGE_SIZE;
 
@@ -2091,10 +2136,12 @@ static void buf_pool_resize() {
       srv_buf_pool_old_size, srv_buf_pool_size, srv_buf_pool_chunk_unit);
 
   /* set new limit for all buffer pool for resizing */
+  /* 为所有缓冲池设置新的调整大小限制 */
   for (ulint i = 0; i < srv_buf_pool_instances; i++) {
     buf_pool = buf_pool_from_array(i);
 
     // No locking needed to read, same thread updated those
+    // 读取不需要锁定，同一线程更新这些内容
     ut_ad(buf_pool->curr_size == buf_pool->old_size);
     ut_ad(buf_pool->n_chunks_new == buf_pool->n_chunks);
 #ifdef UNIV_DEBUG
@@ -2117,25 +2164,35 @@ static void buf_pool_resize() {
   }
 
   /* disable AHI if needed */
+  /* 如果需要，禁用 AHI */
   bool btr_search_disabled = false;
 
   buf_resize_status("Disabling adaptive hash index.");
+  // 禁用自适应哈希索引。
 
   btr_search_s_lock_all();
+  // 锁定所有自适应哈希索引。
+
   if (btr_search_enabled) {
     btr_search_s_unlock_all();
+    // 解锁所有自适应哈希索引。
     btr_search_disabled = true;
+    // 设置 btr_search_disabled 为 true。
   } else {
     btr_search_s_unlock_all();
+    // 解锁所有自适应哈希索引。
   }
 
   btr_search_disable(true);
+  // 禁用自适应哈希索引。
 
   if (btr_search_disabled) {
     ib::info(ER_IB_MSG_60) << "disabled adaptive hash index.";
+    // 如果 btr_search_disabled 为 true，记录日志信息。
   }
 
   /* set withdraw target */
+  /* 设置撤回目标 */
   for (ulint i = 0; i < srv_buf_pool_instances; i++) {
     buf_pool = buf_pool_from_array(i);
     if (buf_pool->curr_size < buf_pool->old_size) {
@@ -2151,8 +2208,10 @@ static void buf_pool_resize() {
 
       ut_ad(buf_pool->withdraw_target == 0);
       buf_pool->withdraw_target = withdraw_target;
+      //差异点：多了一个判断，如果 withdraw_target 为 0，设置 warning 为 true。
       buf_pool_withdrawing = true;
     }
+    //差异点：少了一个步骤状态更新
   }
 
   buf_resize_status("Withdrawing blocks to be shrunken.");
@@ -2165,6 +2224,7 @@ withdraw_retry:
   bool should_retry_withdraw = false;
 
   /* wait for the number of blocks fit to the new size (if needed)*/
+  /* 等待适合新大小的块数（如果需要） */
   for (ulint i = 0; i < srv_buf_pool_instances; i++) {
     buf_pool = buf_pool_from_array(i);
     if (buf_pool->curr_size < buf_pool->old_size) {
@@ -2174,11 +2234,13 @@ withdraw_retry:
 
   if (srv_shutdown_state.load() >= SRV_SHUTDOWN_CLEANUP) {
     /* abort to resize for shutdown. */
+    /* 为关闭中止调整大小。 */
     buf_pool_withdrawing = false;
     return;
   }
 
   /* abort buffer pool load */
+  /* 中止缓冲池加载 */
   buf_load_abort();
 
   if (should_retry_withdraw &&
@@ -2189,7 +2251,14 @@ withdraw_retry:
       message_interval *= 2;
     }
 
+//差异点：
+//1. 下面这段代码没有在一个大括号内
+//2. 增加了trx的Nil检查
+//3. 时间检查不一样
+//4. 事务日志打印增加了事务锁
     trx_sys_mutex_enter();
+    // 进入事务系统互斥锁。
+    
     bool found = false;
     for (trx_t *trx = UT_LIST_GET_FIRST(trx_sys->mysql_trx_list); trx != NULL;
          trx = UT_LIST_GET_NEXT(mysql_trx_list, trx)) {
@@ -2202,15 +2271,20 @@ withdraw_retry:
                                     " resizing can complete only"
                                     " after all the transactions"
                                     " below release the blocks.";
+          // 以下事务可能持有缓冲池中要撤回的块。只有在所有以下事务释放块后，缓冲池调整大小才能完成。
           found = true;
         }
-
+    
         trx_mutex_enter(trx);
+        // 进入事务互斥锁。
         lock_trx_print_wait_and_mvcc_state(stderr, trx);
+        // 打印事务等待和 MVCC 状态。
         trx_mutex_exit(trx);
+        // 退出事务互斥锁。
       }
     }
     trx_sys_mutex_exit();
+    // 退出事务系统互斥锁。
 
     withdraw_started = ut_time();
   }
@@ -2251,6 +2325,7 @@ withdraw_retry:
   }
 
   /* Indicate critical path */
+  /* 表示关键路径 */
   buf_pool_resizing = true;
 
   /* Acquire all buffer pool mutexes and hash table locks */
@@ -2259,6 +2334,9 @@ withdraw_retry:
   have no pointers to them from the buffer pool nor from any other thread
   except for the freeing one to remove redundant locking. The same applies
   to freshly allocated pages before any pointers to them are published.*/
+  /* 获取所有缓冲池互斥锁和哈希表锁 */
+  /* TODO：虽然我们在这里确实锁了很多，但这并不一定能保证足够的正确性。利用已释放的页面必须没有指向它们的指针
+  从缓冲池或任何其他线程中删除冗余锁定。新分配的页面在发布任何指针之前也是如此。 */
   for (ulint i = 0; i < srv_buf_pool_instances; ++i) {
     mutex_enter(&(buf_pool_from_array(i)->chunks_mutex));
   }
@@ -2291,6 +2369,7 @@ withdraw_retry:
   buf_chunk_map_reg = UT_NEW_NOKEY(buf_pool_chunk_map_t());
 
   /* add/delete chunks */
+  /* 添加/删除块 */
   for (ulint i = 0; i < srv_buf_pool_instances; ++i) {
     buf_pool_t *buf_pool = buf_pool_from_array(i);
     buf_chunk_t *chunk;
@@ -2303,6 +2382,7 @@ withdraw_retry:
 
     if (buf_pool->n_chunks_new < buf_pool->n_chunks) {
       /* delete chunks */
+      /* 删除块 */
       chunk = buf_pool->chunks + buf_pool->n_chunks_new;
       echunk = buf_pool->chunks + buf_pool->n_chunks;
 
@@ -2328,6 +2408,7 @@ withdraw_retry:
       }
 
       /* discard withdraw list */
+      /* 丢弃撤回列表 */
       UT_LIST_INIT(buf_pool->withdraw, &buf_page_t::list);
       buf_pool->withdraw_target = 0;
 
@@ -2341,6 +2422,7 @@ withdraw_retry:
 
     {
       /* reallocate buf_pool->chunks */
+      /* 重新分配 buf_pool->chunks */
       const ulint new_chunks_size = buf_pool->n_chunks_new * sizeof(*chunk);
 
       buf_chunk_t *new_chunks = reinterpret_cast<buf_chunk_t *>(
@@ -2376,6 +2458,7 @@ withdraw_retry:
 
     if (buf_pool->n_chunks_new > buf_pool->n_chunks) {
       /* add chunks */
+      /* 添加块 */
       chunk = buf_pool->chunks + buf_pool->n_chunks;
       echunk = buf_pool->chunks + buf_pool->n_chunks_new;
 
@@ -2413,6 +2496,7 @@ withdraw_retry:
   calc_buf_pool_size:
 
     /* recalc buf_pool->curr_size */
+    /* 重新计算 buf_pool->curr_size */
     ulint new_size = 0;
 
     chunk = buf_pool->chunks;
@@ -2430,6 +2514,7 @@ withdraw_retry:
   }
 
   /* set instance sizes */
+  /* 设置实例大小 */
   {
     ulint curr_size = 0;
 
@@ -2455,6 +2540,7 @@ withdraw_retry:
 
   /* Normalize page_hash and zip_hash,
   if the new size is too different */
+  /* 如果新大小差异太大，则规范化 page_hash 和 zip_hash */
   if (!warning && new_size_too_diff) {
     buf_resize_status("Resizing hash tables.");
 
@@ -2469,6 +2555,7 @@ withdraw_retry:
   }
 
   /* Release all buf_pool_mutex/page_hash */
+  /* 释放所有 buf_pool_mutex/page_hash */
   for (ulint i = 0; i < srv_buf_pool_instances; ++i) {
     buf_pool_t *buf_pool = buf_pool_from_array(i);
 
@@ -2489,19 +2576,23 @@ withdraw_retry:
   buf_pool_resizing = false;
 
   /* Normalize other components, if the new size is too different */
+  /* 如果新大小差异太大，则规范化其他组件 */
   if (!warning && new_size_too_diff) {
     srv_buf_pool_base_size = srv_buf_pool_size;
 
     buf_resize_status("Resizing also other hash tables.");
 
     /* normalize lock_sys */
+    /* 规范化 lock_sys */
     srv_lock_table_size = 5 * (srv_buf_pool_size / UNIV_PAGE_SIZE);
     lock_sys_resize(srv_lock_table_size);
 
     /* normalize btr_search_sys */
+    /* 规范化 btr_search_sys */
     btr_search_sys_resize(buf_pool_get_curr_size() / sizeof(void *) / 64);
 
     /* normalize dict_sys */
+    /* 规范化 dict_sys */
     dict_resize();
 
     ib::info(ER_IB_MSG_68) << "Resized hash tables at lock_sys,"
@@ -2509,6 +2600,7 @@ withdraw_retry:
   }
 
   /* normalize ibuf->max_size */
+  /* 规范化 ibuf->max_size */
   ibuf_max_size_update(srv_change_buffer_max_size);
 
   if (srv_buf_pool_old_size != srv_buf_pool_size) {
@@ -2520,6 +2612,7 @@ withdraw_retry:
   }
 
   /* enable AHI if needed */
+  /* 如果需要，启用 AHI */
   if (btr_search_disabled) {
     btr_search_enable();
     ib::info(ER_IB_MSG_70) << "Re-enabled adaptive hash index.";
@@ -2543,6 +2636,8 @@ withdraw_retry:
 
   return;
 }
+
+
 
 /** This is the thread for resizing buffer pool. It waits for an event and
 when waked up either performs a resizing and sleeps again. */
