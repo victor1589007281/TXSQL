@@ -1185,24 +1185,37 @@ static const buf_block_t *buf_chunk_not_freed(
 
 /** Set buffer pool size variables
  Note: It's safe without mutex protection because of startup only. */
+/** 设置缓冲池大小变量
+ 注意：由于仅在启动时调用，因此无需互斥保护。 */
 static void buf_pool_set_sizes(void) {
   ulint i;
+  // 定义循环变量。
   ulint curr_size = 0;
+  // 初始化当前缓冲池大小。
 
   for (i = 0; i < srv_buf_pool_instances; i++) {
+    // 遍历所有缓冲池实例。
     buf_pool_t *buf_pool;
 
     buf_pool = buf_pool_from_array(i);
+    // 获取缓冲池实例。
     curr_size += buf_pool->curr_pool_size;
+    // 累加当前缓冲池大小。
   }
   if (srv_buf_pool_curr_size == 0) {
+    // 如果当前缓冲池大小为 0。
     srv_buf_pool_curr_size = curr_size;
+    // 设置当前缓冲池大小为累加的大小。
   } else {
     srv_buf_pool_curr_size = srv_buf_pool_size;
+    // 否则，设置当前缓冲池大小为配置的缓冲池大小。
   }
   srv_buf_pool_old_size = srv_buf_pool_size;
+  // 设置旧的缓冲池大小为配置的缓冲池大小。
   srv_buf_pool_base_size = srv_buf_pool_size;
+  // 设置基准缓冲池大小为配置的缓冲池大小。
   os_wmb;
+  // 写内存屏障，确保所有写操作完成。
 }
 
 /** Initialize a buffer pool instance.
@@ -1813,9 +1826,13 @@ static bool buf_pool_withdraw_blocks(buf_pool_t *buf_pool) {
     while (block != NULL &&
            UT_LIST_GET_LEN(buf_pool->withdraw) < buf_pool->withdraw_target) {
       ut_ad(block->page.in_free_list);
+      // 确认块在 free_list 中。
       ut_ad(!block->page.in_flush_list);
+      // 确认块不在 flush_list 中。
       ut_ad(!block->page.in_LRU_list);
+      // 确认块不在 LRU 列表中。
       ut_a(!buf_page_in_file(&block->page));
+      // 确认块不在文件中。
 
       buf_block_t *next_block;
       next_block =
@@ -1850,12 +1867,15 @@ static bool buf_pool_withdraw_blocks(buf_pool_t *buf_pool) {
       // 退出 free_list 互斥锁。
 
       buf_flush_do_batch(buf_pool, BUF_FLUSH_LRU, scan_depth, 0, &n_flushed);
+      // 执行 LRU 批量刷新。
       buf_flush_wait_batch_end(buf_pool, BUF_FLUSH_LRU, n_flushed != 0);
-
+      // 等待 LRU 批量刷新结束。
+      
       if (n_flushed) {
         MONITOR_INC_VALUE_CUMULATIVE(MONITOR_LRU_BATCH_FLUSH_TOTAL_PAGE,
                                      MONITOR_LRU_BATCH_FLUSH_COUNT,
                                      MONITOR_LRU_BATCH_FLUSH_PAGES, n_flushed);
+        // 累计监控 LRU 批量刷新总页面数、计数和页面数。
       }
     } else {
       mutex_exit(&buf_pool->free_list_mutex);
@@ -2001,113 +2021,91 @@ static bool buf_pool_withdraw_blocks(buf_pool_t *buf_pool) {
 
 /** resize page_hash and zip_hash for a buffer pool instance.
 @param[in]	buf_pool	buffer pool instance */
+/** 为缓冲池实例调整 page_hash 和 zip_hash 的大小。
+@param[in]	buf_pool	缓冲池实例 */
 static void buf_pool_resize_hash(buf_pool_t *buf_pool) {
   hash_table_t *new_hash_table;
+  // 定义新的哈希表指针。
 
   ut_ad(mutex_own(&buf_pool->zip_hash_mutex));
+  // 确认持有 zip_hash 互斥锁。
   ut_ad(buf_pool->page_hash_old == NULL);
+  // 确认 page_hash_old 为空。
 
   /* recreate page_hash */
+  /* 重新创建 page_hash */
   new_hash_table = ib_recreate(buf_pool->page_hash,
                                srv_page_hash_cell_factor * buf_pool->curr_size);
+  // 重新创建 page_hash 哈希表，大小为当前缓冲池大小乘以 srv_page_hash_cell_factor。
 
   for (ulint i = 0; i < hash_get_n_cells(buf_pool->page_hash); i++) {
+    // 遍历 page_hash 哈希表的所有单元格。
     buf_page_t *bpage;
 
     bpage = static_cast<buf_page_t *>(HASH_GET_FIRST(buf_pool->page_hash, i));
+    // 获取当前单元格中的第一个页面。
 
     while (bpage) {
+      // 遍历单元格中的所有页面。
       buf_page_t *prev_bpage = bpage;
+      // 保存当前页面指针。
       ulint fold;
 
       bpage = static_cast<buf_page_t *>(HASH_GET_NEXT(hash, prev_bpage));
+      // 获取下一个页面。
 
       fold = prev_bpage->id.fold();
+      // 获取页面的折叠 ID。
 
       HASH_DELETE(buf_page_t, hash, buf_pool->page_hash, fold, prev_bpage);
+      // 从旧的 page_hash 哈希表中删除页面。
 
       HASH_INSERT(buf_page_t, hash, new_hash_table, fold, prev_bpage);
+      // 将页面插入到新的 page_hash 哈希表中。
     }
   }
 
   buf_pool->page_hash_old = buf_pool->page_hash;
+  // 将旧的 page_hash 哈希表指针保存到 page_hash_old。
   buf_pool->page_hash = new_hash_table;
+  // 更新 page_hash 哈希表指针为新的哈希表。
 
   /* recreate zip_hash */
+  /* 重新创建 zip_hash */
   new_hash_table = hash_create(2 * buf_pool->curr_size);
+  // 创建新的 zip_hash 哈希表，大小为当前缓冲池大小的两倍。
 
   for (ulint i = 0; i < hash_get_n_cells(buf_pool->zip_hash); i++) {
+    // 遍历 zip_hash 哈希表的所有单元格。
     buf_page_t *bpage;
 
     bpage = static_cast<buf_page_t *>(HASH_GET_FIRST(buf_pool->zip_hash, i));
+    // 获取当前单元格中的第一个页面。
 
     while (bpage) {
+      // 遍历单元格中的所有页面。
       buf_page_t *prev_bpage = bpage;
+      // 保存当前页面指针。
       ulint fold;
 
       bpage = static_cast<buf_page_t *>(HASH_GET_NEXT(hash, prev_bpage));
+      // 获取下一个页面。
 
       fold = BUF_POOL_ZIP_FOLD(reinterpret_cast<buf_block_t *>(prev_bpage));
+      // 获取页面的折叠 ID。
 
       HASH_DELETE(buf_page_t, hash, buf_pool->zip_hash, fold, prev_bpage);
+      // 从旧的 zip_hash 哈希表中删除页面。
 
       HASH_INSERT(buf_page_t, hash, new_hash_table, fold, prev_bpage);
+      // 将页面插入到新的 zip_hash 哈希表中。
     }
   }
 
   hash_table_free(buf_pool->zip_hash);
+  // 释放旧的 zip_hash 哈希表内存。
   buf_pool->zip_hash = new_hash_table;
-}
-
-#ifdef UNIV_DEBUG
-/** This is a debug routine to inject an memory allocation failure error. */
-static void buf_pool_resize_chunk_make_null(buf_chunk_t **new_chunks) {
-  static int count = 0;
-
-  if (count == 1) {
-    ut_free(*new_chunks);
-    *new_chunks = NULL;
-  }
-
-  count++;
-}
-#endif /* UNIV_DEBUG */
-
-ulonglong buf_pool_adjust_chunk_unit(ulonglong size) {
-  /* Size unit of buffer pool is larger than srv_buf_pool_size.
-  adjust srv_buf_pool_chunk_unit for srv_buf_pool_size. */
-  if (size * srv_buf_pool_instances > srv_buf_pool_size) {
-    size = (srv_buf_pool_size + srv_buf_pool_instances - 1) /
-           srv_buf_pool_instances;
-  }
-
-  /* Make sure that srv_buf_pool_chunk_unit is divisible by blk_sz */
-  if (size % srv_buf_pool_chunk_unit_blk_sz != 0) {
-    size += srv_buf_pool_chunk_unit_blk_sz -
-            (size % srv_buf_pool_chunk_unit_blk_sz);
-  }
-
-  /* Make sure that srv_buf_pool_chunk_unit is not larger than max, and don't
-  forget that it also has to be divisible by blk_sz */
-  const auto CHUNK_UNIT_ALIGNED_MAX =
-      srv_buf_pool_chunk_unit_max -
-      (srv_buf_pool_chunk_unit_max % srv_buf_pool_chunk_unit_blk_sz);
-  if (size > CHUNK_UNIT_ALIGNED_MAX) {
-    size = CHUNK_UNIT_ALIGNED_MAX;
-  }
-
-  /* Make sure that srv_buf_pool_chunk_unit is not smaller than min */
-  ut_ad(srv_buf_pool_chunk_unit_min % srv_buf_pool_chunk_unit_blk_sz == 0);
-  if (size < srv_buf_pool_chunk_unit_min) {
-    size = srv_buf_pool_chunk_unit_min;
-  }
-
-  ut_ad(size >= srv_buf_pool_chunk_unit_min);
-  ut_ad(size <= srv_buf_pool_chunk_unit_max);
-  ut_ad(size % srv_buf_pool_chunk_unit_blk_sz == 0);
-  ut_ad(size % UNIV_PAGE_SIZE == 0);
-
-  return size;
+  // 更新 zip_hash 哈希表指针为新的哈希表。
 }
 
 
@@ -2366,7 +2364,9 @@ withdraw_retry:
   }
 
   UT_DELETE(buf_chunk_map_reg);
+  // 删除现有的 buf_chunk_map_reg 对象。
   buf_chunk_map_reg = UT_NEW_NOKEY(buf_pool_chunk_map_t());
+  // 创建一个新的 buf_pool_chunk_map_t 对象，并将其分配给 buf_chunk_map_reg。
 
   /* add/delete chunks */
   /* 添加/删除块 */
@@ -2381,135 +2381,193 @@ withdraw_retry:
         i, buf_pool->n_chunks, buf_pool->n_chunks_new);
 
     if (buf_pool->n_chunks_new < buf_pool->n_chunks) {
+      // 如果新的块数量小于当前块数量，表示需要删除一些块。
       /* delete chunks */
       /* 删除块 */
       chunk = buf_pool->chunks + buf_pool->n_chunks_new;
+      // 设置 chunk 指针指向需要删除的第一个块。
       echunk = buf_pool->chunks + buf_pool->n_chunks;
-
+      // 设置 echunk 指针指向当前块的末尾。
+    
       ulint sum_freed = 0;
-
+      // 初始化已释放块的计数。
+    
       while (chunk < echunk) {
+        // 遍历需要删除的块。
         buf_block_t *block = chunk->blocks;
-
+        // 获取当前块的第一个页面。
+    
         for (ulint j = chunk->size; j--; block++) {
+          // 遍历块中的每个页面。
           if (block->locks_inited) {
+            // 如果页面的锁已初始化。
             mutex_free(&block->mutex);
+            // 释放页面的互斥锁。
             rw_lock_free(&block->lock);
-
+            // 释放页面的读写锁。
+    
             ut_d(rw_lock_free(&block->debug_latch));
+            // 在调试模式下，释放页面的调试锁。
           }
         }
-
+    
         buf_pool->deallocate_chunk(chunk);
-
+        // 释放当前块的内存。
+    
         sum_freed += chunk->size;
-
+        // 增加已释放块的计数。
+    
         ++chunk;
+        // 移动到下一个块。
       }
-
+    
       /* discard withdraw list */
       /* 丢弃撤回列表 */
       UT_LIST_INIT(buf_pool->withdraw, &buf_page_t::list);
+      // 初始化撤回列表。
       buf_pool->withdraw_target = 0;
-
+      // 重置撤回目标。
+    
       ib::info(ER_IB_MSG_63)
           << "buffer pool " << i << " : "
           << buf_pool->n_chunks - buf_pool->n_chunks_new << " chunks ("
           << sum_freed << " blocks) were freed.";
-
+      // 记录日志信息，显示已释放的块数量和页面数量。
+    
       buf_pool->n_chunks = buf_pool->n_chunks_new;
+      // 更新缓冲池的块数量。
     }
 
     {
       /* reallocate buf_pool->chunks */
       /* 重新分配 buf_pool->chunks */
       const ulint new_chunks_size = buf_pool->n_chunks_new * sizeof(*chunk);
-
+      // 计算新的块数组大小。
+    
       buf_chunk_t *new_chunks = reinterpret_cast<buf_chunk_t *>(
           ut_zalloc_nokey_nofatal(new_chunks_size));
-
+      // 分配新的块数组内存。
+    
       DBUG_EXECUTE_IF("buf_pool_resize_chunk_null",
                       buf_pool_resize_chunk_make_null(&new_chunks););
-
+      // 在调试模式下，可能将 new_chunks 设置为 NULL。
+    
       if (new_chunks == NULL) {
+        // 如果分配失败。
         ib::error(ER_IB_MSG_64) << "buffer pool " << i
                                 << " : failed to allocate"
                                    " the chunk array.";
+        // 记录错误信息。
         buf_pool->n_chunks_new = buf_pool->n_chunks;
+        // 恢复新的块数量为当前块数量。
         warning = true;
+        // 设置警告标志。
         buf_pool->chunks_old = NULL;
+        // 将旧的块数组指针设置为 NULL。
         for (ulint j = 0; j < buf_pool->n_chunks_new; j++) {
           buf_pool_register_chunk(&buf_pool->chunks[j]);
+          // 注册当前块数组中的每个块。
         }
         goto calc_buf_pool_size;
+        // 跳转到计算缓冲池大小的标签。
       }
-
+    
       ulint n_chunks_copy = ut_min(buf_pool->n_chunks_new, buf_pool->n_chunks);
-
+      // 计算需要复制的块数量。
+    
       memcpy(new_chunks, buf_pool->chunks, n_chunks_copy * sizeof(*chunk));
-
+      // 复制块数组。
+    
       for (ulint j = 0; j < n_chunks_copy; j++) {
         buf_pool_register_chunk(&new_chunks[j]);
+        // 注册新的块数组中的每个块。
       }
-
+    
       buf_pool->chunks_old = buf_pool->chunks;
+      // 将当前块数组指针保存到 chunks_old。
       buf_pool->chunks = new_chunks;
+      // 更新块数组指针为新的块数组。
     }
 
     if (buf_pool->n_chunks_new > buf_pool->n_chunks) {
+      // 如果新的块数量大于当前块数量，表示需要添加一些块。
       /* add chunks */
       /* 添加块 */
       chunk = buf_pool->chunks + buf_pool->n_chunks;
+      // 设置 chunk 指针指向需要添加的第一个块。
       echunk = buf_pool->chunks + buf_pool->n_chunks_new;
-
+      // 设置 echunk 指针指向新的块的末尾。
+    
       ulint sum_added = 0;
+      // 初始化已添加块的计数。
       ulint n_chunks = buf_pool->n_chunks;
-
+      // 初始化当前块数量。
+    
       while (chunk < echunk) {
+        // 遍历需要添加的块。
         ulonglong unit = srv_buf_pool_chunk_unit;
-
+        // 获取块的单位大小。
+    
         if (!buf_chunk_init(buf_pool, chunk, unit, nullptr)) {
+          // 如果初始化块失败。
           ib::error(ER_IB_MSG_65) << "buffer pool " << i
                                   << " : failed to allocate"
                                      " new memory.";
-
+          // 记录错误信息。
+    
           warning = true;
-
+          // 设置警告标志。
+    
           buf_pool->n_chunks_new = n_chunks;
-
+          // 恢复新的块数量为当前块数量。
+    
           break;
+          // 退出循环。
         }
-
+    
         sum_added += chunk->size;
-
+        // 增加已添加块的计数。
+    
         ++n_chunks;
+        // 增加当前块数量。
         ++chunk;
+        // 移动到下一个块。
       }
 
-      ib::info(ER_IB_MSG_66)
-          << "buffer pool " << i << " : "
-          << buf_pool->n_chunks_new - buf_pool->n_chunks << " chunks ("
-          << sum_added << " blocks) were added.";
+  ib::info(ER_IB_MSG_66)
+      << "buffer pool " << i << " : "
+      << buf_pool->n_chunks_new - buf_pool->n_chunks << " chunks ("
+      << sum_added << " blocks) were added.";
+  // 记录日志信息，显示已添加的块数量和页面数量。
 
-      buf_pool->n_chunks = n_chunks;
-    }
+  buf_pool->n_chunks = n_chunks;
+  // 更新缓冲池的块数量。
+}
   calc_buf_pool_size:
 
     /* recalc buf_pool->curr_size */
     /* 重新计算 buf_pool->curr_size */
     ulint new_size = 0;
-
+    // 初始化新的缓冲池大小。
+    
     chunk = buf_pool->chunks;
+    // 获取缓冲池的块数组指针。
     do {
       new_size += chunk->size;
+      // 累加每个块的大小到 new_size。
     } while (++chunk < buf_pool->chunks + buf_pool->n_chunks);
-
+    // 遍历所有块，直到块数组的末尾。
+    
     buf_pool->curr_size = new_size;
+    // 更新缓冲池的当前大小。
     buf_pool->n_chunks_new = buf_pool->n_chunks;
-
+    // 更新缓冲池的新块数量为当前块数量。
+    
     if (buf_pool->chunks_old) {
       ut_free(buf_pool->chunks_old);
+      // 释放旧的块数组内存。
       buf_pool->chunks_old = NULL;
+      // 将旧的块数组指针设置为 NULL。
     }
   }
 
@@ -2517,60 +2575,95 @@ withdraw_retry:
   /* 设置实例大小 */
   {
     ulint curr_size = 0;
-
+    // 初始化当前缓冲池大小。
+  
     for (ulint i = 0; i < srv_buf_pool_instances; i++) {
+      // 遍历所有缓冲池实例。
       buf_pool = buf_pool_from_array(i);
-
+      // 获取缓冲池实例。
+  
       ut_ad(UT_LIST_GET_LEN(buf_pool->withdraw) == 0);
-
+      // 确认撤回列表为空。
+  
       buf_pool->read_ahead_area = static_cast<page_no_t>(
           ut_min(BUF_READ_AHEAD_PAGES,
                  ut_2_power_up(buf_pool->curr_size / BUF_READ_AHEAD_PORTION)));
+      // 计算预读区域大小。
+  
       buf_pool->curr_pool_size = buf_pool->curr_size * UNIV_PAGE_SIZE;
+      // 计算当前缓冲池大小（字节）。
+  
       curr_size += buf_pool->curr_pool_size;
+      // 累加当前缓冲池大小。
+  
       buf_pool->old_size = buf_pool->curr_size;
+      // 更新缓冲池的旧大小。
     }
+  
     srv_buf_pool_curr_size = curr_size;
+    // 更新全局缓冲池大小。
+  
     innodb_set_buf_pool_size(buf_pool_size_align(curr_size));
+    // 设置缓冲池大小。
   }
 
+// 新的BUFF比原来的两倍要大或者小于原来的一半，则认为变化过大
   const bool new_size_too_diff =
       srv_buf_pool_base_size > srv_buf_pool_size * 2 ||
       srv_buf_pool_base_size * 2 < srv_buf_pool_size;
-
+  // 判断新缓冲池大小与基准大小的差异是否过大。
+  
   /* Normalize page_hash and zip_hash,
   if the new size is too different */
   /* 如果新大小差异太大，则规范化 page_hash 和 zip_hash */
   if (!warning && new_size_too_diff) {
+    // 如果没有警告并且新大小差异过大。
     buf_resize_status("Resizing hash tables.");
-
+    // 更新缓冲池调整大小状态为正在调整哈希表大小。
+  
     for (ulint i = 0; i < srv_buf_pool_instances; ++i) {
+      // 遍历所有缓冲池实例。
       buf_pool_t *buf_pool = buf_pool_from_array(i);
-
+      // 获取缓冲池实例。
+  
       buf_pool_resize_hash(buf_pool);
-
+      // 调整缓冲池的哈希表大小。
+  
       ib::info(ER_IB_MSG_67)
           << "buffer pool " << i << " : hash tables were resized.";
+      // 记录日志信息，显示缓冲池的哈希表已调整大小。
     }
   }
 
   /* Release all buf_pool_mutex/page_hash */
   /* 释放所有 buf_pool_mutex/page_hash */
   for (ulint i = 0; i < srv_buf_pool_instances; ++i) {
-    buf_pool_t *buf_pool = buf_pool_from_array(i);
-
-    mutex_exit(&buf_pool->chunks_mutex);
-    mutex_exit(&buf_pool->flush_state_mutex);
-    mutex_exit(&buf_pool->zip_hash_mutex);
-    mutex_exit(&buf_pool->free_list_mutex);
-    mutex_exit(&buf_pool->zip_free_mutex);
-    hash_unlock_x_all(buf_pool->page_hash);
-    mutex_exit(&buf_pool->LRU_list_mutex);
-
-    if (buf_pool->page_hash_old != NULL) {
-      hash_table_free(buf_pool->page_hash_old);
-      buf_pool->page_hash_old = NULL;
-    }
+      // 遍历所有缓冲池实例。
+      buf_pool_t *buf_pool = buf_pool_from_array(i);
+      // 获取缓冲池实例。
+  
+      mutex_exit(&buf_pool->chunks_mutex);
+      // 释放 chunks 互斥锁。
+      mutex_exit(&buf_pool->flush_state_mutex);
+      // 释放 flush_state 互斥锁。
+      mutex_exit(&buf_pool->zip_hash_mutex);
+      // 释放 zip_hash 互斥锁。
+      mutex_exit(&buf_pool->free_list_mutex);
+      // 释放 free_list 互斥锁。
+      mutex_exit(&buf_pool->zip_free_mutex);
+      // 释放 zip_free 互斥锁。
+      hash_unlock_x_all(buf_pool->page_hash);
+      // 释放 page_hash 哈希表的所有锁。
+      mutex_exit(&buf_pool->LRU_list_mutex);
+      // 释放 LRU_list 互斥锁。
+  
+      if (buf_pool->page_hash_old != NULL) {
+        // 如果旧的 page_hash 哈希表不为空。
+        hash_table_free(buf_pool->page_hash_old);
+        // 释放旧的 page_hash 哈希表内存。
+        buf_pool->page_hash_old = NULL;
+        // 将旧的 page_hash 哈希表指针设置为 NULL。
+      }
   }
 
   buf_pool_resizing = false;
@@ -2578,25 +2671,33 @@ withdraw_retry:
   /* Normalize other components, if the new size is too different */
   /* 如果新大小差异太大，则规范化其他组件 */
   if (!warning && new_size_too_diff) {
-    srv_buf_pool_base_size = srv_buf_pool_size;
-
-    buf_resize_status("Resizing also other hash tables.");
-
-    /* normalize lock_sys */
-    /* 规范化 lock_sys */
-    srv_lock_table_size = 5 * (srv_buf_pool_size / UNIV_PAGE_SIZE);
-    lock_sys_resize(srv_lock_table_size);
-
-    /* normalize btr_search_sys */
-    /* 规范化 btr_search_sys */
-    btr_search_sys_resize(buf_pool_get_curr_size() / sizeof(void *) / 64);
-
-    /* normalize dict_sys */
-    /* 规范化 dict_sys */
-    dict_resize();
-
-    ib::info(ER_IB_MSG_68) << "Resized hash tables at lock_sys,"
-                              " adaptive hash index, dictionary.";
+      // 如果没有警告并且新大小差异过大。
+      srv_buf_pool_base_size = srv_buf_pool_size;
+      // 更新基准缓冲池大小为当前缓冲池大小。
+  
+      buf_resize_status("Resizing also other hash tables.");
+      // 更新缓冲池调整大小状态为正在调整其他哈希表大小。
+  
+      /* normalize lock_sys */
+      /* 规范化 lock_sys */
+      srv_lock_table_size = 5 * (srv_buf_pool_size / UNIV_PAGE_SIZE);
+      // 计算新的锁系统表大小。
+      lock_sys_resize(srv_lock_table_size);
+      // 调整锁系统表大小。
+  
+      /* normalize btr_search_sys */
+      /* 规范化 btr_search_sys */
+      btr_search_sys_resize(buf_pool_get_curr_size() / sizeof(void *) / 64);
+      // 调整自适应哈希索引系统大小。
+  
+      /* normalize dict_sys */
+      /* 规范化 dict_sys */
+      dict_resize();
+      // 调整字典系统大小。
+  
+      ib::info(ER_IB_MSG_68) << "Resized hash tables at lock_sys,"
+                                " adaptive hash index, dictionary.";
+      // 记录日志信息，显示锁系统、自适应哈希索引和字典的哈希表已调整大小。
   }
 
   /* normalize ibuf->max_size */

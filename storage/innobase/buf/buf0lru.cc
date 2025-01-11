@@ -177,10 +177,15 @@ static inline void incr_LRU_size_in_bytes(buf_page_t *bpage,
 instead of the general LRU list.
 @param[in,out]	buf_pool	buffer pool instance
 @return true if should use unzip_LRU */
+/** 确定是否应使用 unzip_LRU 列表来驱逐受害者，而不是使用一般的 LRU 列表。
+@param[in,out]	buf_pool	缓冲池实例
+@return 如果应使用 unzip_LRU 则返回 true */
 ibool buf_LRU_evict_from_unzip_LRU(buf_pool_t *buf_pool) {
   ut_ad(mutex_own(&buf_pool->LRU_list_mutex));
+  // 确认持有 LRU 列表互斥锁。
 
   /* If the unzip_LRU list is empty, we can only use the LRU. */
+  /* 如果 unzip_LRU 列表为空，我们只能使用 LRU。 */
   if (UT_LIST_GET_LEN(buf_pool->unzip_LRU) == 0) {
     return (FALSE);
   }
@@ -188,6 +193,8 @@ ibool buf_LRU_evict_from_unzip_LRU(buf_pool_t *buf_pool) {
   /* If unzip_LRU is at most 10% of the size of the LRU list,
   then use the LRU.  This slack allows us to keep hot
   decompressed pages in the buffer pool. */
+  /* 如果 unzip_LRU 的大小最多为 LRU 列表的 10%，则使用 LRU。
+  这种松弛允许我们在缓冲池中保留热解压页面。 */
   if (UT_LIST_GET_LEN(buf_pool->unzip_LRU) <=
       UT_LIST_GET_LEN(buf_pool->LRU) / 10) {
     return (FALSE);
@@ -195,12 +202,14 @@ ibool buf_LRU_evict_from_unzip_LRU(buf_pool_t *buf_pool) {
 
   /* If eviction hasn't started yet, we assume by default
   that a workload is disk bound. */
+  /* 如果驱逐尚未开始，我们默认假设工作负载是磁盘绑定的。 */
   if (buf_pool->freed_page_clock == 0) {
     return (TRUE);
   }
 
   /* Calculate the average over past intervals, and add the values
   of the current interval. */
+  /* 计算过去间隔的平均值，并加上当前间隔的值。 */
   ulint io_avg =
       buf_LRU_stat_sum.io / BUF_LRU_STAT_N_INTERVAL + buf_LRU_stat_cur.io;
 
@@ -211,6 +220,8 @@ ibool buf_LRU_evict_from_unzip_LRU(buf_pool_t *buf_pool) {
   (unzip_avg is smaller than the weighted io_avg), evict an
   uncompressed frame from unzip_LRU.  Otherwise we assume that
   the load is CPU bound and evict from the regular LRU. */
+  /* 根据我们的公式进行决策。如果负载是 I/O 绑定的（unzip_avg 小于加权 io_avg），
+  则从 unzip_LRU 驱逐一个未压缩的帧。否则，我们假设负载是 CPU 绑定的，并从常规 LRU 驱逐。 */
   return (unzip_avg <= io_avg * BUF_LRU_IO_TO_UNZIP_FACTOR);
 }
 

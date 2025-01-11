@@ -330,26 +330,33 @@ void buf_block_set_state(
 
 /** Determines if a block is mapped to a tablespace.
  @return true if mapped */
+/** 确定块是否映射到表空间。
+ @return 如果映射则返回 true */
 UNIV_INLINE
 ibool buf_page_in_file(
     const buf_page_t *bpage) /*!< in: pointer to control block */
+    /*!< 输入：指向控制块的指针 */
 {
   switch (buf_page_get_state(bpage)) {
     case BUF_BLOCK_POOL_WATCH:
       ut_error;
+      // 如果块状态是 BUF_BLOCK_POOL_WATCH，发生错误。
       break;
     case BUF_BLOCK_ZIP_PAGE:
     case BUF_BLOCK_ZIP_DIRTY:
     case BUF_BLOCK_FILE_PAGE:
       return (TRUE);
+      // 如果块状态是 BUF_BLOCK_ZIP_PAGE、BUF_BLOCK_ZIP_DIRTY 或 BUF_BLOCK_FILE_PAGE，返回 true。
     case BUF_BLOCK_NOT_USED:
     case BUF_BLOCK_READY_FOR_USE:
     case BUF_BLOCK_MEMORY:
     case BUF_BLOCK_REMOVE_HASH:
       break;
+      // 如果块状态是 BUF_BLOCK_NOT_USED、BUF_BLOCK_READY_FOR_USE、BUF_BLOCK_MEMORY 或 BUF_BLOCK_REMOVE_HASH，继续执行。
   }
 
   return (FALSE);
+  // 返回 false。
 }
 
 #ifndef UNIV_HOTBACKUP

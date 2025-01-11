@@ -545,14 +545,20 @@ void ibuf_init_at_db_start(void) {
 }
 
 /** Updates the max_size value for ibuf. */
+/** 更新插入缓冲区的 max_size 值。 */
 void ibuf_max_size_update(ulint new_val) /*!< in: new value in terms of
                                          percentage of the buffer pool size */
 {
   ulint new_size =
       ((buf_pool_get_curr_size() / UNIV_PAGE_SIZE) * new_val) / 100;
+  // 计算新的插入缓冲区大小，单位为页，等于缓冲池大小的百分比。
+
   mutex_enter(&ibuf_mutex);
+  // 进入插入缓冲区互斥锁。
   ibuf->max_size = new_size;
+  // 更新插入缓冲区的 max_size 值。
   mutex_exit(&ibuf_mutex);
+  // 退出插入缓冲区互斥锁。
 }
 
 #endif /* !UNIV_HOTBACKUP */

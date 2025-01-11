@@ -32,3 +32,5 @@ depend/boost_1_70_0
 .cproject
 .project
 .settings/
+.idea/
+cmake-build-debug/

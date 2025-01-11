@@ -708,47 +708,75 @@ static ulint lock_rec_lock_fold(const lock_t *lock) {
 
 /** Resize the lock hash tables.
 @param[in]	n_cells	number of slots in lock hash table */
+/** 调整锁哈希表的大小。
+@param[in]	n_cells	锁哈希表中的槽数 */
 void lock_sys_resize(ulint n_cells) {
   hash_table_t *old_hash;
+  // 定义旧的哈希表指针。
 
   /* Lock the whole lock system. */
+  /* 锁定整个锁系统。 */
   LockGuard guard;
+  // 创建一个锁保护对象，自动锁定和解锁。
 
   old_hash = lock_sys->rec_hash;
+  // 保存旧的记录锁哈希表指针。
   lock_sys->rec_hash = hash_create(n_cells);
+  // 创建新的记录锁哈希表。
   HASH_MIGRATE(old_hash, lock_sys->rec_hash, lock_t, hash, lock_rec_lock_fold);
+  // 将旧的记录锁哈希表迁移到新的哈希表。
   hash_table_free(old_hash);
+  // 释放旧的记录锁哈希表内存。
 
   old_hash = lock_sys->prdt_hash;
+  // 保存旧的预测锁哈希表指针。
   lock_sys->prdt_hash = hash_create(n_cells);
+  // 创建新的预测锁哈希表。
   HASH_MIGRATE(old_hash, lock_sys->prdt_hash, lock_t, hash, lock_rec_lock_fold);
+  // 将旧的预测锁哈希表迁移到新的哈希表。
   hash_table_free(old_hash);
+  // 释放旧的预测锁哈希表内存。
 
   old_hash = lock_sys->prdt_page_hash;
+  // 保存旧的预测页面锁哈希表指针。
   lock_sys->prdt_page_hash = hash_create(n_cells);
+  // 创建新的预测页面锁哈希表。
   HASH_MIGRATE(old_hash, lock_sys->prdt_page_hash, lock_t, hash,
                lock_rec_lock_fold);
+  // 将旧的预测页面锁哈希表迁移到新的哈希表。
   hash_table_free(old_hash);
+  // 释放旧的预测页面锁哈希表内存。
 
   /* need to update block->lock_hash_val */
+  /* 需要更新 block->lock_hash_val */
   for (ulint i = 0; i < srv_buf_pool_instances; ++i) {
+    // 遍历所有缓冲池实例。
     buf_pool_t *buf_pool = buf_pool_from_array(i);
+    // 获取缓冲池实例。
 
     mutex_enter(&buf_pool->LRU_list_mutex);
+    // 进入 LRU 列表互斥锁。
     buf_page_t *bpage;
     bpage = UT_LIST_GET_FIRST(buf_pool->LRU);
+    // 获取 LRU 列表中的第一个页面。
 
     while (bpage != NULL) {
+      // 遍历 LRU 列表中的所有页面。
       if (buf_page_get_state(bpage) == BUF_BLOCK_FILE_PAGE) {
+        // 如果页面状态是 BUF_BLOCK_FILE_PAGE。
         buf_block_t *block;
         block = reinterpret_cast<buf_block_t *>(bpage);
+        // 获取页面对应的块。
 
         block->lock_hash_val =
             lock_rec_hash(bpage->id.space(), bpage->id.page_no());
+        // 更新块的 lock_hash_val。
       }
       bpage = UT_LIST_GET_NEXT(LRU, bpage);
+      // 获取 LRU 列表中的下一个页面。
     }
     mutex_exit(&buf_pool->LRU_list_mutex);
+    // 退出 LRU 列表互斥锁。
   }
 }
 

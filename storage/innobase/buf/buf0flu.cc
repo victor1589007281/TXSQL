@@ -651,29 +651,44 @@ LRU list and block mutexes.
 @param[in]	bpage	buffer control block, must be buf_page_in_file() and
                         in the LRU list
 @return true if can replace immediately */
+/** 如果文件页面块可以立即替换，则返回 TRUE，
+即允许从 FILE_PAGE 转换为 NOT_USED。调用者必须持有 LRU 列表和块互斥锁。
+@param[in]	bpage	缓冲区控制块，必须是 buf_page_in_file() 并且在 LRU 列表中
+@return 如果可以立即替换，则返回 true */
 ibool buf_flush_ready_for_replace(buf_page_t *bpage) {
 #ifdef UNIV_DEBUG
   buf_pool_t *buf_pool = buf_pool_from_bpage(bpage);
   ut_ad(mutex_own(&buf_pool->LRU_list_mutex));
+  // 确认持有 LRU 列表互斥锁。
 #endif /* UNIV_DEBUG */
   ut_ad(mutex_own(buf_page_get_mutex(bpage)));
+  // 确认持有页面互斥锁。
   ut_ad(bpage->in_LRU_list);
+  // 确认页面在 LRU 列表中。
 
   if (buf_page_in_file(bpage)) {
+    // 如果页面在文件中。
     return (bpage->oldest_modification == 0 && bpage->buf_fix_count == 0 &&
             buf_page_get_io_fix(bpage) == BUF_IO_NONE);
+    // 如果页面没有修改，缓冲区固定计数为 0，并且没有 IO 固定，则返回 true。
   }
 
   ib::fatal(ER_IB_MSG_123) << "Buffer block " << bpage << " state "
                            << bpage->state << " in the LRU list!";
+  // 如果页面不在文件中，记录致命错误信息。
 
   return (FALSE);
+  // 返回 false。
 }
 
 /** Check if the block is modified and ready for flushing.
 @param[in]	bpage		buffer control block, must be buf_page_in_file()
 @param[in]	flush_type	type of flush
 @return true if can flush immediately */
+/** 检查块是否已修改并准备好刷新。
+@param[in]	bpage		缓冲区控制块，必须是 buf_page_in_file()
+@param[in]	flush_type	刷新类型
+@return 如果可以立即刷新，则返回 true */
 bool buf_flush_ready_for_flush(buf_page_t *bpage, buf_flush_t flush_type) {
 #ifdef UNIV_DEBUG
   buf_pool_t *buf_pool = buf_pool_from_bpage(bpage);
@@ -681,33 +696,42 @@ bool buf_flush_ready_for_flush(buf_page_t *bpage, buf_flush_t flush_type) {
   ut_a(buf_page_in_file(bpage) ||
        (buf_page_get_state(bpage) == BUF_BLOCK_REMOVE_HASH &&
         !mutex_own(&buf_pool->LRU_list_mutex)));
+  // 确认页面在文件中，或者页面状态是 BUF_BLOCK_REMOVE_HASH 并且没有持有 LRU 列表互斥锁。
 #else
   ut_a(buf_page_in_file(bpage) ||
        buf_page_get_state(bpage) == BUF_BLOCK_REMOVE_HASH);
+  // 确认页面在文件中，或者页面状态是 BUF_BLOCK_REMOVE_HASH。
 #endif
   ut_ad(mutex_own(buf_page_get_mutex(bpage)) ||
         (flush_type == BUF_FLUSH_LIST && buf_flush_list_mutex_own(buf_pool)));
+  // 确认持有页面互斥锁，或者刷新类型是 BUF_FLUSH_LIST 并且持有 flush_list 互斥锁。
   ut_ad(flush_type < BUF_FLUSH_N_TYPES);
+  // 确认刷新类型小于 BUF_FLUSH_N_TYPES。
 
   if (bpage->oldest_modification == 0 ||
       buf_page_get_io_fix_unlocked(bpage) != BUF_IO_NONE) {
     return (false);
+    // 如果页面没有修改，或者页面被 IO 固定，则返回 false。
   }
 
   ut_ad(bpage->in_flush_list);
+  // 确认页面在 flush_list 中。
 
   switch (flush_type) {
     case BUF_FLUSH_LIST:
       return (buf_page_get_state(bpage) != BUF_BLOCK_REMOVE_HASH);
+      // 如果刷新类型是 BUF_FLUSH_LIST，并且页面状态不是 BUF_BLOCK_REMOVE_HASH，则返回 true。
     case BUF_FLUSH_LRU:
     case BUF_FLUSH_SINGLE_PAGE:
       return (true);
+      // 如果刷新类型是 BUF_FLUSH_LRU 或 BUF_FLUSH_SINGLE_PAGE，则返回 true。
 
     case BUF_FLUSH_N_TYPES:
       break;
   }
 
   ut_error;
+  // 发生错误。
 }
 
 /** Remove a block from the flush list of modified blocks.
@@ -1263,41 +1287,65 @@ returns true.
 @param[in]	flush_type	type of flush
 @param[in]	sync		true if sync IO request
 @return true if page was flushed */
+/** 异步将可刷新的页面从缓冲池写入文件。
+注意：1. 在模拟的 aio 中，我们必须在发布一批写入后调用 os_aio_simulated_wake_handler_threads！
+2. 进入此函数时必须持有 buf_page_get_mutex(bpage)。如果 flush_type == BUF_FLUSH_SINGLE_PAGE，则必须持有 LRU 列表互斥锁。
+如果函数返回 true，则这两个互斥锁都将被释放。
+@param[in]	buf_pool	缓冲池实例
+@param[in]	bpage		缓冲区控制块
+@param[in]	flush_type	刷新类型
+@param[in]	sync		如果是同步 IO 请求，则为 true
+@return 如果页面已刷新，则返回 true */
 ibool buf_flush_page(buf_pool_t *buf_pool, buf_page_t *bpage,
                      buf_flush_t flush_type, bool sync) {
   BPageMutex *block_mutex;
 
   ut_ad(flush_type < BUF_FLUSH_N_TYPES);
+  // 确认刷新类型小于 BUF_FLUSH_N_TYPES。
+
   /* Hold the LRU list mutex iff called for a single page LRU
   flush. A single page LRU flush is already non-performant, and holding
   the LRU list mutex allows us to avoid having to store the previous LRU
   list page or to restart the LRU scan in
   buf_flush_single_page_from_LRU(). */
+  /* 仅在调用单页 LRU 刷新时持有 LRU 列表互斥锁。单页 LRU 刷新已经性能不佳，持有 LRU 列表互斥锁可以避免存储前一个 LRU 列表页面或重新启动 LRU 扫描。 */
   ut_ad(flush_type == BUF_FLUSH_SINGLE_PAGE ||
         !mutex_own(&buf_pool->LRU_list_mutex));
+  // 确认刷新类型不是 BUF_FLUSH_SINGLE_PAGE 或者没有持有 LRU 列表互斥锁。
   ut_ad(flush_type != BUF_FLUSH_SINGLE_PAGE ||
         mutex_own(&buf_pool->LRU_list_mutex));
+  // 确认刷新类型是 BUF_FLUSH_SINGLE_PAGE 并且持有 LRU 列表互斥锁。
   ut_ad(buf_page_in_file(bpage));
+  // 确认页面在文件中。
   ut_ad(!sync || flush_type == BUF_FLUSH_SINGLE_PAGE);
+  // 确认不是同步 IO 请求或者刷新类型是 BUF_FLUSH_SINGLE_PAGE。
 
   block_mutex = buf_page_get_mutex(bpage);
+  // 获取页面的互斥锁。
   ut_ad(mutex_own(block_mutex));
+  // 确认持有页面互斥锁。
 
   ut_ad(buf_flush_ready_for_flush(bpage, flush_type));
+  // 确认页面已修改并准备好刷新。
 
   bool is_uncompressed;
 
   is_uncompressed = (buf_page_get_state(bpage) == BUF_BLOCK_FILE_PAGE);
+  // 确认页面状态是 BUF_BLOCK_FILE_PAGE。
   ut_ad(is_uncompressed == (block_mutex != &buf_pool->zip_mutex));
+  // 确认页面未压缩并且页面互斥锁不是 zip_mutex。
 
   ibool flush;
   rw_lock_t *rw_lock = NULL;
   bool no_fix_count = bpage->buf_fix_count == 0;
+  // 确认页面没有被固定。
 
   bool should_try = buf_should_try_flush(bpage->oldest_modification);
+  // 确认是否应该尝试刷新页面。
   if (!is_uncompressed) {
     flush = TRUE;
     rw_lock = NULL;
+    // 如果页面未压缩，设置 flush 为 TRUE，并且不需要 rw_lock。
   } else if (!(no_fix_count
                 || flush_type == BUF_FLUSH_LIST
                 || should_try) ||
@@ -1308,35 +1356,48 @@ ibool buf_flush_page(buf_pool_t *buf_pool, buf_page_t *bpage,
     /* For table residing in temporary tablespace sync is done
     using IO_FIX and so before scheduling for flush ensure that
     page is not fixed. */
+    /* 这是一个启发式方法，以避免昂贵的 SX 尝试。
+    对于驻留在临时表空间中的表，同步是使用 IO_FIX 完成的，因此在调度刷新之前，请确保页面未固定。 */
     flush = FALSE;
+    // 如果页面已固定或不应该尝试刷新，设置 flush 为 FALSE。
   } else {
     rw_lock = &reinterpret_cast<buf_block_t *>(bpage)->lock;
+    // 获取页面的读写锁。
     if (flush_type != BUF_FLUSH_LIST &&
           !should_try) {
       flush = rw_lock_sx_lock_nowait(rw_lock, BUF_IO_WRITE);
+      // 如果刷新类型不是 BUF_FLUSH_LIST 并且不应该尝试刷新，尝试立即获取读写锁。
     } else {
       /* Will SX lock later */
       flush = TRUE;
+      // 否则，稍后获取读写锁，设置 flush 为 TRUE。
     }
   }
 
   if (flush) {
     /* We are committed to flushing by the time we get here */
+    /* 到这里时，我们已经承诺要刷新 */
 
     mutex_enter(&buf_pool->flush_state_mutex);
+    // 进入 flush_state 互斥锁。
 
     buf_page_set_io_fix(bpage, BUF_IO_WRITE);
+    // 设置页面的 IO 固定状态为 BUF_IO_WRITE。
 
     buf_page_set_flush_type(bpage, flush_type);
+    // 设置页面的刷新类型。
 
     if (buf_pool->n_flush[flush_type] == 0) {
       os_event_reset(buf_pool->no_flush[flush_type]);
+      // 如果刷新类型的计数为 0，重置 no_flush 事件。
     }
 
     ++buf_pool->n_flush[flush_type];
+    // 刷新类型的计数加一。
 
     if (bpage->oldest_modification > buf_pool->max_lsn_io) {
       buf_pool->max_lsn_io = bpage->oldest_modification;
+      // 更新最大 LSN IO。
     }
 
     if (!fsp_is_system_temporary(bpage->id.space()) &&
@@ -1353,14 +1414,18 @@ ibool buf_flush_page(buf_pool_t *buf_pool, buf_page_t *bpage,
 
       arch_page_sys->track_page(bpage, buf_pool->track_page_lsn, frame_lsn,
                                 false);
+      // 跟踪页面的 LSN。
     }
 
     mutex_exit(&buf_pool->flush_state_mutex);
+    // 退出 flush_state 互斥锁。
 
     mutex_exit(block_mutex);
+    // 退出页面互斥锁。
 
     if (flush_type == BUF_FLUSH_SINGLE_PAGE) {
       mutex_exit(&buf_pool->LRU_list_mutex);
+      // 如果刷新类型是 BUF_FLUSH_SINGLE_PAGE，退出 LRU 列表互斥锁。
     }
 
     if ((flush_type == BUF_FLUSH_LIST || should_try) &&
@@ -1372,10 +1437,12 @@ ibool buf_flush_page(buf_pool_t *buf_pool, buf_page_t *bpage,
         /* avoiding deadlock possibility involves
         doublewrite buffer, should flush it, because
         it might hold the another block->lock. */
+        /* 避免死锁的可能性涉及 doublewrite 缓冲区，应该刷新它，因为它可能持有另一个块的锁。 */
         buf_dblwr_flush_buffered_writes();
       }
 
       rw_lock_sx_lock_gen(rw_lock, BUF_IO_WRITE);
+      // 获取读写锁。
     }
 
     /* If there is an observer that want to know if the asynchronous
@@ -1383,19 +1450,26 @@ ibool buf_flush_page(buf_pool_t *buf_pool, buf_page_t *bpage,
     Note: we set flush observer to a page with x-latch, so we can
     guarantee that notify_flush and notify_remove are called in pair
     with s-latch on a uncompressed page. */
+    /* 如果有观察者想知道异步刷新是否已发送，则通知它。
+    注意：我们将刷新观察者设置为具有 x-latch 的页面，因此我们可以保证 notify_flush 和 notify_remove 成对调用，并在未压缩页面上具有 s-latch。 */
     if (bpage->flush_observer != NULL) {
       bpage->flush_observer->notify_flush(buf_pool, bpage);
+      // 通知观察者页面已刷新。
     }
 
     /* Even though bpage is not protected by any mutex at this
     point, it is safe to access bpage, because it is io_fixed and
     oldest_modification != 0.  Thus, it cannot be relocated in the
     buffer pool or removed from flush_list or LRU_list. */
+    /* 即使此时 bpage 未受任何互斥锁保护，访问 bpage 也是安全的，因为它是 io_fixed 并且 oldest_modification != 0。
+    因此，它不能在缓冲池中重新定位或从 flush_list 或 LRU_list 中删除。 */
 
     buf_flush_write_block_low(bpage, flush_type, sync);
+    // 低级别写入块。
   }
 
   return (flush);
+  // 返回是否刷新。
 }
 
 #if defined UNIV_DEBUG || defined UNIV_IBUF_DEBUG
@@ -1470,6 +1544,12 @@ static bool buf_flush_check_neighbor(const page_id_t &page_id,
 @param[in]	n_flushed	number of pages flushed so far in this batch
 @param[in]	n_to_flush	maximum number of pages we are allowed to flush
 @return number of pages flushed */
+/** 刷新 flush 区域内的所有可刷新的页面到磁盘。
+@param[in]	page_id		页面 ID
+@param[in]	flush_type	BUF_FLUSH_LRU 或 BUF_FLUSH_LIST
+@param[in]	n_flushed	本批次中已刷新的页面数
+@param[in]	n_to_flush	允许刷新的最大页面数
+@return 刷新的页面数 */
 static ulint buf_flush_try_neighbors(const page_id_t &page_id,
                                      buf_flush_t flush_type, ulint n_flushed,
                                      ulint n_to_flush) {
@@ -1480,8 +1560,11 @@ static ulint buf_flush_try_neighbors(const page_id_t &page_id,
   buf_pool_t *buf_pool = buf_pool_get(page_id);
 
   ut_ad(flush_type == BUF_FLUSH_LRU || flush_type == BUF_FLUSH_LIST);
+  // 确认刷新类型是 BUF_FLUSH_LRU 或 BUF_FLUSH_LIST。
   ut_ad(!mutex_own(&buf_pool->LRU_list_mutex));
+  // 确认没有持有 LRU 列表互斥锁。
   ut_ad(!buf_flush_list_mutex_own(buf_pool));
+  // 确认没有持有 flush_list 互斥锁。
 
   ulong flush_neighbors = srv_flush_neighbors;
 
@@ -1489,24 +1572,29 @@ static ulint buf_flush_try_neighbors(const page_id_t &page_id,
       flush_neighbors == 0) {
     /* If there is little space or neighbor flushing is
     not enabled then just flush the victim. */
+    /* 如果空间很小或未启用邻居刷新，则仅刷新受害者。 */
     low = page_id.page_no();
     high = page_id.page_no() + 1;
   } else {
     /* When flushed, dirty blocks are searched in
     neighborhoods of this size, and flushed along with the
     original page. */
+    /* 刷新时，在此大小的邻域中搜索脏块，并与原始页面一起刷新。 */
 
     page_no_t buf_flush_area;
 
     buf_flush_area = std::min(BUF_READ_AHEAD_AREA(buf_pool),
                               static_cast<page_no_t>(buf_pool->curr_size / 16));
+    // 计算缓冲区刷新区域的大小。
 
     low = (page_id.page_no() / buf_flush_area) * buf_flush_area;
     high = (page_id.page_no() / buf_flush_area + 1) * buf_flush_area;
+    // 计算低位和高位页面号。
 
     if (flush_neighbors == 1) {
       /* adjust 'low' and 'high' to limit
          for contiguous dirty area */
+      /* 调整 'low' 和 'high' 以限制连续的脏区域 */
       if (page_id.page_no() > low) {
         for (i = page_id.page_no() - 1; i >= low; i--) {
           if (!buf_flush_check_neighbor(page_id_t(page_id.space(), i),
@@ -1519,6 +1607,7 @@ static ulint buf_flush_try_neighbors(const page_id_t &page_id,
             and calling
             buf_flush_check_neighbor() with
             i == (ulint) -1 */
+            /* 避免在 low == 0 时重叠，并调用 buf_flush_check_neighbor()，i == (ulint) -1 */
             i--;
             break;
           }
@@ -1531,6 +1620,7 @@ static ulint buf_flush_try_neighbors(const page_id_t &page_id,
            buf_flush_check_neighbor(page_id_t(page_id.space(), i), flush_type);
            i++) {
         /* do nothing */
+        /* 什么都不做 */
       }
       high = i;
     }
@@ -1545,6 +1635,7 @@ static ulint buf_flush_try_neighbors(const page_id_t &page_id,
 
   DBUG_PRINT("ib_buf", ("flush " UINT32PF ":%u..%u", page_id.space(),
                         (unsigned)low, (unsigned)high));
+  // 调试打印刷新范围。
 
   for (i = low; i < high; i++) {
     buf_page_t *bpage;
@@ -1558,6 +1649,7 @@ static ulint buf_flush_try_neighbors(const page_id_t &page_id,
       are flushing has not been flushed yet then
       we'll try to flush the victim that we
       selected originally. */
+      /* 我们已经刷新了足够多的页面，应该结束了。然而，有一个例外。如果我们正在刷新的页面的邻居尚未刷新，那么我们将尝试刷新我们最初选择的受害者。 */
       if (i <= page_id.page_no()) {
         i = page_id.page_no();
       } else {
@@ -1570,6 +1662,7 @@ static ulint buf_flush_try_neighbors(const page_id_t &page_id,
     buf_pool = buf_pool_get(cur_page_id);
 
     /* We only want to flush pages from this buffer pool. */
+    /* 我们只想刷新此缓冲池中的页面。 */
     bpage = buf_page_hash_get_s_locked(buf_pool, cur_page_id, &hash_lock);
 
     if (bpage == NULL) {
@@ -1583,9 +1676,11 @@ static ulint buf_flush_try_neighbors(const page_id_t &page_id,
     rw_lock_s_unlock(hash_lock);
 
     ut_a(buf_page_in_file(bpage));
+    // 确认页面在文件中。
 
     /* We avoid flushing 'non-old' blocks in an LRU flush,
     because the flushed blocks are soon freed */
+    /* 我们避免在 LRU 刷新中刷新 'non-old' 块，因为刷新后的块很快会被释放 */
 
     if (flush_type != BUF_FLUSH_LRU || i == page_id.page_no() ||
         buf_page_is_old(bpage)) {
@@ -1593,6 +1688,7 @@ static ulint buf_flush_try_neighbors(const page_id_t &page_id,
           (i == page_id.page_no() || bpage->buf_fix_count == 0)) {
         /* We also try to flush those
         neighbors != offset */
+        /* 我们还尝试刷新那些邻居 != 偏移量 */
 
         if (buf_flush_page(buf_pool, bpage, flush_type, false)) {
           ++count;
@@ -1611,13 +1707,15 @@ static ulint buf_flush_try_neighbors(const page_id_t &page_id,
     MONITOR_INC_VALUE_CUMULATIVE(MONITOR_FLUSH_NEIGHBOR_TOTAL_PAGE,
                                  MONITOR_FLUSH_NEIGHBOR_COUNT,
                                  MONITOR_FLUSH_NEIGHBOR_PAGES, (count - 1));
+    // 累计监控邻居刷新总页面数、计数和页面数。
   }
 
   return (count);
+  // 返回刷新的页面数。
 }
 
 /** Check if the block is modified and ready for flushing.
-is ready to flush then flush the page and try o flush its neighbors. The caller
+is ready to flush then flush the page and try to flush its neighbors. The caller
 must hold the buffer pool list mutex corresponding to the type of flush.
 @param[in]	bpage		buffer control block,
                                 must be buf_page_in_file(bpage)
@@ -1626,6 +1724,13 @@ must hold the buffer pool list mutex corresponding to the type of flush.
 @param[in,out]	count		number of pages flushed
 @return	true if the list mutex was released during this function.  This does
 not guarantee that some pages were written as well. */
+/** 检查块是否已修改并准备好刷新。
+如果准备好刷新，则刷新页面并尝试刷新其邻居。调用者必须持有与刷新类型对应的缓冲池列表互斥锁。
+@param[in]	bpage		缓冲区控制块，必须是 buf_page_in_file(bpage)
+@param[in]	flush_type	BUF_FLUSH_LRU 或 BUF_FLUSH_LIST
+@param[in]	n_to_flush	要刷新的页面数
+@param[in,out]	count		已刷新的页面数
+@return 如果在此函数期间释放了列表互斥锁，则返回 true。这并不保证也写入了一些页面。 */
 static bool buf_flush_page_and_try_neighbors(buf_page_t *bpage,
                                              buf_flush_t flush_type,
                                              ulint n_to_flush, ulint *count) {
@@ -1637,13 +1742,16 @@ static bool buf_flush_page_and_try_neighbors(buf_page_t *bpage,
   BPageMutex *block_mutex = NULL;
 
   ut_ad(flush_type != BUF_FLUSH_SINGLE_PAGE);
+  // 确认刷新类型不是 BUF_FLUSH_SINGLE_PAGE。
 
   ut_ad((flush_type == BUF_FLUSH_LRU && mutex_own(&buf_pool->LRU_list_mutex)) ||
         (flush_type == BUF_FLUSH_LIST && buf_flush_list_mutex_own(buf_pool)));
+  // 确认持有与刷新类型对应的缓冲池列表互斥锁。
 
   if (flush_type == BUF_FLUSH_LRU) {
     block_mutex = buf_page_get_mutex(bpage);
     mutex_enter(block_mutex);
+    // 如果刷新类型是 BUF_FLUSH_LRU，获取页面的互斥锁。
   }
 
 #ifdef UNIV_DEBUG
@@ -1655,36 +1763,45 @@ static bool buf_flush_page_and_try_neighbors(buf_page_t *bpage,
   ut_a(buf_page_in_file(bpage) ||
        buf_page_get_state(bpage) == BUF_BLOCK_REMOVE_HASH);
 #endif /* UNIV_DEBUG */
+  // 确认页面在文件中，或者页面状态是 BUF_BLOCK_REMOVE_HASH。
 
   if (buf_flush_ready_for_flush(bpage, flush_type)) {
+    // 如果页面已修改并准备好刷新。
     buf_pool_t *buf_pool;
 
     buf_pool = buf_pool_from_bpage(bpage);
 
     if (flush_type == BUF_FLUSH_LRU) {
       mutex_exit(&buf_pool->LRU_list_mutex);
+      // 如果刷新类型是 BUF_FLUSH_LRU，释放 LRU 列表互斥锁。
     }
 
     const page_id_t page_id = bpage->id;
 
     if (flush_type == BUF_FLUSH_LRU) {
       mutex_exit(block_mutex);
+      // 如果刷新类型是 BUF_FLUSH_LRU，释放页面互斥锁。
     } else {
       buf_flush_list_mutex_exit(buf_pool);
+      // 否则，释放 flush_list 互斥锁。
     }
 
     /* Try to flush also all the neighbors */
     *count += buf_flush_try_neighbors(page_id, flush_type, *count, n_to_flush);
+    // 尝试刷新所有邻居页面，并增加已刷新的页面数。
 
     if (flush_type == BUF_FLUSH_LRU) {
       mutex_enter(&buf_pool->LRU_list_mutex);
+      // 如果刷新类型是 BUF_FLUSH_LRU，重新进入 LRU 列表互斥锁。
     } else {
       buf_flush_list_mutex_enter(buf_pool);
+      // 否则，重新进入 flush_list 互斥锁。
     }
     flushed = true;
 
   } else if (flush_type == BUF_FLUSH_LRU) {
     mutex_exit(block_mutex);
+    // 如果刷新类型是 BUF_FLUSH_LRU，释放页面互斥锁。
 
     flushed = false;
   } else {
@@ -1693,8 +1810,10 @@ static bool buf_flush_page_and_try_neighbors(buf_page_t *bpage,
 
   ut_ad((flush_type == BUF_FLUSH_LRU && mutex_own(&buf_pool->LRU_list_mutex)) ||
         (flush_type == BUF_FLUSH_LIST && buf_flush_list_mutex_own(buf_pool)));
+  // 确认持有与刷新类型对应的缓冲池列表互斥锁。
 
   return (flushed);
+  // 返回是否在此函数期间释放了列表互斥锁。
 }
 
 /** This utility moves the uncompressed frames of pages to the free list.
@@ -1707,6 +1826,14 @@ list. The caller must hold the LRU list mutex.
 @param[in]	buf_pool	buffer pool instance
 @param[in]	max		desired number of blocks in the free_list
 @return number of blocks moved to the free list. */
+/** 该工具将页面的未压缩帧移动到 free 列表。
+注意，此函数实际上不会将任何数据刷新到磁盘。
+它只是将未压缩的帧从 unzip_LRU 的尾部分离出来，并将这些释放的帧放入 free 列表。
+注意，这是一个尽力而为的尝试，并不能保证在调用此函数后，free 列表中会有 'max' 块。
+调用者必须持有 LRU 列表互斥锁。
+@param[in]	buf_pool	缓冲池实例
+@param[in]	max		free_list 中所需的块数
+@return 移动到 free 列表的块数。 */
 static ulint buf_free_from_unzip_LRU_list_batch(buf_pool_t *buf_pool,
                                                 ulint max) {
   ulint scanned = 0;
@@ -1715,26 +1842,33 @@ static ulint buf_free_from_unzip_LRU_list_batch(buf_pool_t *buf_pool,
   ulint lru_len = UT_LIST_GET_LEN(buf_pool->unzip_LRU);
 
   ut_ad(mutex_own(&buf_pool->LRU_list_mutex));
+  // 确认持有 LRU 列表互斥锁。
 
   buf_block_t *block = UT_LIST_GET_LAST(buf_pool->unzip_LRU);
+  // 获取 unzip_LRU 列表中的最后一个块。
 
   while (block != NULL && count < max && free_len < srv_LRU_scan_depth &&
          lru_len > UT_LIST_GET_LEN(buf_pool->LRU) / 10) {
     BPageMutex *block_mutex = buf_page_get_mutex(&block->page);
+    // 获取页面的互斥锁。
 
     ++scanned;
 
     mutex_enter(block_mutex);
+    // 进入页面互斥锁。
 
     if (buf_LRU_free_page(&block->page, false)) {
       /* Block was freed, all mutexes released */
+      /* 块已释放，所有互斥锁已释放 */
       ++count;
       mutex_enter(&buf_pool->LRU_list_mutex);
       block = UT_LIST_GET_LAST(buf_pool->unzip_LRU);
+      // 获取 unzip_LRU 列表中的最后一个块。
 
     } else {
       mutex_exit(block_mutex);
       block = UT_LIST_GET_PREV(unzip_LRU, block);
+      // 获取 unzip_LRU 列表中的前一个块。
     }
 
     free_len = UT_LIST_GET_LEN(buf_pool->free);
@@ -1742,14 +1876,17 @@ static ulint buf_free_from_unzip_LRU_list_batch(buf_pool_t *buf_pool,
   }
 
   ut_ad(mutex_own(&buf_pool->LRU_list_mutex));
+  // 确认持有 LRU 列表互斥锁。
 
   if (scanned) {
     MONITOR_INC_VALUE_CUMULATIVE(MONITOR_LRU_BATCH_SCANNED,
                                  MONITOR_LRU_BATCH_SCANNED_NUM_CALL,
                                  MONITOR_LRU_BATCH_SCANNED_PER_CALL, scanned);
+    // 累计监控 LRU 批量扫描的总数、调用次数和每次调用的扫描数。
   }
 
   return (count);
+  // 返回移动到 free 列表的块数。
 }
 
 /** This utility flushes dirty blocks from the end of the LRU list.
@@ -1760,85 +1897,116 @@ to this function there will be 'max' blocks in the free list.
 @param[in]	buf_pool	buffer pool instance
 @param[in]	max		desired number for blocks in the free_list
 @return number of blocks for which the write request was queued. */
+/** 该工具从 LRU 列表的末端刷新脏块。
+调用线程不允许拥有任何页面的锁存！
+它尝试在 free 列表中提供 'max' 块。注意，这是一个尽力而为的尝试，并不能保证在调用此函数后，free 列表中会有 'max' 块。
+@param[in]	buf_pool	缓冲池实例
+@param[in]	max		free_list 中所需的块数
+@return 已排队的写请求的块数。 */
 static ulint buf_flush_LRU_list_batch(buf_pool_t *buf_pool, ulint max) {
   buf_page_t *bpage;
-  ulint scanned = 0;
-  ulint evict_count = 0;
-  ulint count = 0;
-  ulint free_len = UT_LIST_GET_LEN(buf_pool->free);
-  ulint lru_len = UT_LIST_GET_LEN(buf_pool->LRU);
+  ulint scanned = 0; // 扫描的页面数
+  ulint evict_count = 0; // 驱逐的页面数
+  ulint count = 0; // 刷新的页面数
+  ulint free_len = UT_LIST_GET_LEN(buf_pool->free); // free 列表的长度
+  ulint lru_len = UT_LIST_GET_LEN(buf_pool->LRU); // LRU 列表的长度
   ulint withdraw_depth;
 
   ut_ad(mutex_own(&buf_pool->LRU_list_mutex));
+  // 确认持有 LRU 列表互斥锁。
 
   withdraw_depth = buf_get_withdraw_depth(buf_pool);
+  // 获取撤回深度。
 
   for (bpage = UT_LIST_GET_LAST(buf_pool->LRU);
        bpage != NULL && count + evict_count < max &&
        free_len < srv_LRU_scan_depth + withdraw_depth &&
        lru_len > BUF_LRU_MIN_LEN;
        ++scanned, bpage = buf_pool->lru_hp.get()) {
+    // 从 LRU 列表的末端开始扫描页面，直到满足条件：
+    // 1. 页面不为空
+    // 2. 刷新和驱逐的页面数小于 max
+    // 3. free 列表的长度小于 srv_LRU_scan_depth + withdraw_depth
+    // 4. LRU 列表的长度大于 BUF_LRU_MIN_LEN
+    // 每次循环后，扫描的页面数加一，并获取下一个页面。
+
     buf_page_t *prev = UT_LIST_GET_PREV(LRU, bpage);
+    // 获取 LRU 列表中的前一个页面。
     buf_pool->lru_hp.set(prev);
+    // 设置危险指针为前一个页面。
 
     BPageMutex *block_mutex = buf_page_get_mutex(bpage);
+    // 获取页面的互斥锁。
 
     bool acquired = mutex_enter_nowait(block_mutex) == 0;
+    // 尝试立即进入页面互斥锁。
 
     if (acquired && buf_flush_ready_for_replace(bpage)) {
-      /* block is ready for eviction i.e., it is
-      clean and is not IO-fixed or buffer fixed. */
+      // 如果成功获取互斥锁并且页面准备好被替换，即它是干净的，并且没有被 IO 固定或缓冲区固定。
       if (buf_LRU_free_page(bpage, true)) {
+        // 如果页面成功被驱逐，驱逐的页面数加一，并重新进入 LRU 列表互斥锁。
         ++evict_count;
         mutex_enter(&buf_pool->LRU_list_mutex);
       } else {
+        // 否则，释放页面互斥锁。
         mutex_exit(block_mutex);
       }
     } else if (acquired && buf_flush_ready_for_flush(bpage, BUF_FLUSH_LRU)) {
-      /* Block is ready for flush. Dispatch an IO
-      request. The IO helper thread will put it on
-      free list in IO completion routine. */
+      // 如果成功获取互斥锁并且页面准备好被刷新，分派一个 IO 请求。
+      // IO 辅助线程将在 IO 完成例程中将其放入 free 列表。
       mutex_exit(block_mutex);
       buf_flush_page_and_try_neighbors(bpage, BUF_FLUSH_LRU, max, &count);
     } else if (!acquired) {
+      // 如果没有成功获取互斥锁，确认危险指针为前一个页面。
       ut_ad(buf_pool->lru_hp.is_hp(prev));
     } else {
-      /* Can't evict or dispatch this block. Go to
-      previous. */
+      // 如果无法驱逐或分派此块，转到前一个块。
       mutex_exit(block_mutex);
       ut_ad(buf_pool->lru_hp.is_hp(prev));
     }
 
     ut_ad(!mutex_own(block_mutex));
+    // 确认不持有页面互斥锁。
     ut_ad(mutex_own(&buf_pool->LRU_list_mutex));
+    // 确认持有 LRU 列表互斥锁。
 
     free_len = UT_LIST_GET_LEN(buf_pool->free);
+    // 更新 free 列表的长度。
     lru_len = UT_LIST_GET_LEN(buf_pool->LRU);
+    // 更新 LRU 列表的长度。
   }
 
   buf_pool->lru_hp.set(NULL);
+  // 清空危险指针。
 
   /* We keep track of all flushes happening as part of LRU
   flush. When estimating the desired rate at which flush_list
   should be flushed, we factor in this value. */
+  /* 我们跟踪作为 LRU 刷新的一部分发生的所有刷新。当估计 flush_list 应该刷新的期望速率时，我们会考虑这个值。 */
   buf_lru_flush_page_count += count;
+  // 更新 LRU 刷新页面计数。
 
   ut_ad(mutex_own(&buf_pool->LRU_list_mutex));
+  // 确认持有 LRU 列表互斥锁。
 
   if (evict_count) {
     MONITOR_INC_VALUE_CUMULATIVE(MONITOR_LRU_BATCH_EVICT_TOTAL_PAGE,
                                  MONITOR_LRU_BATCH_EVICT_COUNT,
                                  MONITOR_LRU_BATCH_EVICT_PAGES, evict_count);
+    // 累计监控 LRU 批量驱逐的总页面数、计数和页面数。
   }
 
   if (scanned) {
     MONITOR_INC_VALUE_CUMULATIVE(MONITOR_LRU_BATCH_SCANNED,
                                  MONITOR_LRU_BATCH_SCANNED_NUM_CALL,
                                  MONITOR_LRU_BATCH_SCANNED_PER_CALL, scanned);
+    // 累计监控 LRU 批量扫描的总数、调用次数和每次调用的扫描数。
   }
 
   return (count);
+  // 返回已排队的写请求的块数。
 }
+
 
 /** Flush and move pages from LRU or unzip_LRU list to the free list.
 Whether LRU or unzip_LRU is used depends on the state of the system.
@@ -1847,20 +2015,29 @@ Whether LRU or unzip_LRU is used depends on the state of the system.
 @return number of blocks for which either the write request was queued
 or in case of unzip_LRU the number of blocks actually moved to the
 free list */
+/** 从 LRU 或 unzip_LRU 列表中刷新并移动页面到 free 列表。
+使用 LRU 还是 unzip_LRU 取决于系统的状态。
+@param[in]	buf_pool	缓冲池实例
+@param[in]	max		free_list 中所需的块数
+@return 已排队的写请求的块数，或者在 unzip_LRU 的情况下，实际移动到 free 列表的块数 */
 static ulint buf_do_LRU_batch(buf_pool_t *buf_pool, ulint max) {
   ulint count = 0;
 
   ut_ad(mutex_own(&buf_pool->LRU_list_mutex));
+  // 确认持有 LRU 列表互斥锁。
 
   if (buf_LRU_evict_from_unzip_LRU(buf_pool)) {
     count += buf_free_from_unzip_LRU_list_batch(buf_pool, max);
+    // 从 unzip_LRU 列表中批量释放页面，并增加计数。
   }
 
   if (max > count) {
     count += buf_flush_LRU_list_batch(buf_pool, max - count);
+    // 从 LRU 列表中批量刷新页面，并增加计数。
   }
 
   return (count);
+  // 返回处理的页面数量。
 }
 
 /** This utility flushes dirty blocks from the end of the flush_list.
@@ -1937,12 +2114,20 @@ the calling thread is not allowed to own any latches on pages!
 @param[in]	buf_pool	buffer pool instance
 @param[in]	flush_type	BUF_FLUSH_LRU or BUF_FLUSH_LIST; if
 BUF_FLUSH_LIST, then the caller must not own any latches on pages
-@param[in]	min_n		wished minimum mumber of blocks flushed (it is
+@param[in]	min_n		wished minimum number of blocks flushed (it is
 not guaranteed that the actual number is that big, though)
 @param[in]	lsn_limit	in the case of BUF_FLUSH_LIST all blocks whose
 oldest_modification is smaller than this should be flushed (if their number
 does not exceed min_n), otherwise ignored
 @return number of blocks for which the write request was queued */
+/** 该工具从 LRU 列表或 flush_list 的末端刷新脏块。
+注意 1：在 LRU 刷新的情况下，调用线程可能拥有页面的锁存：为了避免死锁，必须编写此函数，以便它不能最终等待这些锁存！
+注意 2：在 flush_list 刷新的情况下，调用线程不允许拥有任何页面的锁存！
+@param[in]	buf_pool	缓冲池实例
+@param[in]	flush_type	BUF_FLUSH_LRU 或 BUF_FLUSH_LIST；如果是 BUF_FLUSH_LIST，则调用者不得拥有任何页面的锁存
+@param[in]	min_n		希望刷新的最小块数（尽管不能保证实际数量会这么大）
+@param[in]	lsn_limit	在 BUF_FLUSH_LIST 的情况下，所有 oldest_modification 小于此值的块应该被刷新（如果它们的数量不超过 min_n），否则忽略
+@return 已排队的写请求的块数 */
 static ulint buf_flush_batch(buf_pool_t *buf_pool, buf_flush_t flush_type,
                              ulint min_n, lsn_t lsn_limit) {
   ut_ad(flush_type == BUF_FLUSH_LRU || flush_type == BUF_FLUSH_LIST);
@@ -1959,23 +2144,31 @@ static ulint buf_flush_batch(buf_pool_t *buf_pool, buf_flush_t flush_type,
 
   /* Note: The buffer pool mutexes is released and reacquired within
   the flush functions. */
+  /* 注意：在刷新函数中，缓冲池互斥锁会被释放并重新获取。 */
   switch (flush_type) {
     case BUF_FLUSH_LRU:
       mutex_enter(&buf_pool->LRU_list_mutex);
+      // 进入 LRU 列表互斥锁。
       count = buf_do_LRU_batch(buf_pool, min_n);
+      // 执行 LRU 批量刷新，并获取处理的页面数量。
       mutex_exit(&buf_pool->LRU_list_mutex);
+      // 退出 LRU 列表互斥锁。
       break;
     case BUF_FLUSH_LIST:
       count = buf_do_flush_list_batch(buf_pool, min_n, lsn_limit);
+      // 执行 flush_list 批量刷新，并获取处理的页面数量。
       break;
     default:
       ut_error;
+      // 发生错误。
   }
 
   DBUG_PRINT("ib_buf", ("flush %u completed, %u pages", unsigned(flush_type),
                         unsigned(count)));
+  // 调试打印刷新完成的信息。
 
   return (count);
+  // 返回处理的页面数量。
 }
 
 /** Gather the aggregated stats for both flush list and LRU list flushing.
@@ -2045,6 +2238,7 @@ static void buf_flush_end(buf_pool_t *buf_pool, buf_flush_t flush_type) {
 }
 
 /** Waits until a flush batch of the given type ends */
+/** 等待给定类型的刷新批次结束 */
 void buf_flush_wait_batch_end(buf_pool_t *buf_pool, /*!< buffer pool instance */
                               buf_flush_t type,     /*!< in: BUF_FLUSH_LRU
                                                     or BUF_FLUSH_LIST */
@@ -2052,29 +2246,43 @@ void buf_flush_wait_batch_end(buf_pool_t *buf_pool, /*!< buffer pool instance */
                                                     tablespaces */
 {
   ut_ad(type == BUF_FLUSH_LRU || type == BUF_FLUSH_LIST);
+  // 确认刷新类型是 BUF_FLUSH_LRU 或 BUF_FLUSH_LIST。
 
   if (buf_pool == NULL) {
+    // 如果缓冲池实例为空。
     ulint i;
 
     for (i = 0; i < srv_buf_pool_instances; ++i) {
+      // 遍历所有缓冲池实例。
       buf_pool_t *buf_pool;
 
       buf_pool = buf_pool_from_array(i);
+      // 从数组中获取缓冲池实例。
 
       thd_wait_begin(NULL, THD_WAIT_DISKIO);
+      // 开始等待磁盘 IO。
       os_event_wait(buf_pool->no_flush[type]);
+      // 等待刷新事件。
       thd_wait_end(NULL);
+      // 结束等待磁盘 IO。
     }
   } else {
+    // 如果缓冲池实例不为空。
     thd_wait_begin(NULL, THD_WAIT_DISKIO);
+    // 开始等待磁盘 IO。
     os_event_wait(buf_pool->no_flush[type]);
+    // 等待刷新事件。
     thd_wait_end(NULL);
+    // 结束等待磁盘 IO。
   }
 
   /* If srv_use_doublewrite_buf is on, we already fsync the
   data to dblwr in buf_flush_end(). */
+  /* 如果启用了 srv_use_doublewrite_buf，我们已经在 buf_flush_end() 中将数据 fsync 到 dblwr。 */
   if (!srv_use_doublewrite_buf && sync) {
+    // 如果没有启用 srv_use_doublewrite_buf 并且需要同步。
     fil_flush_file_spaces(to_int(FIL_TYPE_TABLESPACE));
+    // 刷新表空间文件。
   }
 }
 
@@ -2082,7 +2290,7 @@ void buf_flush_wait_batch_end(buf_pool_t *buf_pool, /*!< buffer pool instance */
 NOTE: The calling thread is not allowed to own any latches on pages!
 @param[in,out]	buf_pool	buffer pool instance
 @param[in]	type		flush type
-@param[in]	min_n		wished minimum mumber of blocks flushed
+@param[in]	min_n		wished minimum number of blocks flushed
 (it is not guaranteed that the actual number is that big, though)
 @param[in]	lsn_limit	in the case BUF_FLUSH_LIST all blocks whose
 oldest_modification is smaller than this should be flushed (if their number
@@ -2091,27 +2299,44 @@ does not exceed min_n), otherwise ignored
 passed back to caller. Ignored if NULL
 @retval true	if a batch was queued successfully.
 @retval false	if another batch of same type was already running. */
+/** 执行给定类型的批量刷新。
+注意：调用线程不允许拥有任何页面的锁存！
+@param[in,out]	buf_pool	缓冲池实例
+@param[in]	type		刷新类型
+@param[in]	min_n		希望刷新的最小块数
+（尽管不能保证实际数量会这么大）
+@param[in]	lsn_limit	在 BUF_FLUSH_LIST 的情况下，所有 oldest_modification 小于此值的块应该被刷新
+（如果它们的数量不超过 min_n），否则忽略
+@param[out]	n_processed	处理的页面数量将传回给调用者。如果为 NULL 则忽略
+@retval true	如果批处理成功排队。
+@retval false	如果另一个相同类型的批处理已经在运行。 */
 bool buf_flush_do_batch(buf_pool_t *buf_pool, buf_flush_t type, ulint min_n,
                         lsn_t lsn_limit, ulint *n_processed) {
   ut_ad(type == BUF_FLUSH_LRU || type == BUF_FLUSH_LIST);
 
   if (n_processed != NULL) {
     *n_processed = 0;
+    // 初始化 n_processed 为 0。
   }
 
   if (!buf_flush_start(buf_pool, type)) {
     return (false);
+    // 如果另一个相同类型的批处理已经在运行，则返回 false。
   }
 
   ulint page_count = buf_flush_batch(buf_pool, type, min_n, lsn_limit);
+  // 执行批量刷新，并获取处理的页面数量。
 
   buf_flush_end(buf_pool, type);
+  // 结束批量刷新。
 
   if (n_processed != NULL) {
     *n_processed = page_count;
+    // 将处理的页面数量传回给调用者。
   }
 
   return (true);
+  // 返回 true，表示批处理成功排队。
 }
 
 /** This utility flushes dirty blocks from the end of the flush list of all
